@@ -1,214 +1,165 @@
-#!/usr/bin/env python3
-"""
-بوت وظائف العراق الذكي - @iraqjopsforall
-نسخة محسّنة: جلب وظائف حقيقية مع معالجة قوية للأخطاء وبدائل عند فشل Gemini.
-"""
-
-import re
-import json
 import time
-import hashlib
-import logging
-import sqlite3
-import threading
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import random
+import threading
 
-# ==================== الإعدادات ====================
+# ================== إعدادات ==================
 BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY"
 CHANNEL_ID = "@iraqjopsforall"
-GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
-CHECK_INTERVAL = 3600
-DB_FILE = "iraq_jobs.db"
+ADMIN_ID = 7590912344
 
-REMOTIVE_API = "https://remotive.com/api/remote-jobs"
-ARBEITNOW_API = "https://www.arbeitnow.com/api/job-board-api"
-
-IRAQ_PROVINCES = {
-    "بغداد": "Baghdad",
-    "البصرة": "Basra",
-    "نينوى": "Nineveh Mosul",
-    "أربيل": "Erbil",
-    "النجف": "Najaf",
-    "كربلاء": "Karbala",
-    "السليمانية": "Sulaymaniyah",
-    "كركوك": "Kirkuk",
-    "الأنبار": "Anbar",
-    "ديالى": "Diyala",
-    "ذي قار": "Dhi Qar",
-    "بابل": "Babylon",
-    "واسط": "Wasit",
-    "ميسان": "Maysan",
-    "المثنى": "Muthanna",
-    "القادسية": "Qadisiyyah",
-    "صلاح الدين": "Salah al-Din",
-    "دهوك": "Duhok",
-    "حلبجة": "Halabja",
+# ================== حالة البوت ==================
+settings = {
+    "enabled": False,
+    "interval": 900,   # 15 دقيقة
+    "days": 1,
+    "topics": ["cv", "tools", "ai", "tips", "fun"]
 }
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("bot.log", encoding="utf-8"), logging.StreamHandler()],
-)
-log = logging.getLogger(__name__)
+start_time = None
 
-paused = False
-
-
-def _build_session():
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update({"User-Agent": "IraqJobsBot/2.0"})
-    return session
-
-
-HTTP = _build_session()
-
-# ==================== قاعدة البيانات ====================
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""CREATE TABLE IF NOT EXISTS posted_jobs (
-        id TEXT PRIMARY KEY,
-        title TEXT,
-        company TEXT,
-        province TEXT,
-        url TEXT,
-        posted_at TEXT
-    )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS admins (chat_id INTEGER PRIMARY KEY)""")
-    conn.commit()
-    conn.close()
-
-
-def add_admin(chat_id):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("INSERT OR IGNORE INTO admins VALUES (?)", (chat_id,))
-    conn.commit()
-    conn.close()
-
-
-def is_posted(title, company, url):
-    key = hashlib.md5(f"{title}|{company}|{url}".encode()).hexdigest()
-    conn = sqlite3.connect(DB_FILE)
-    res = conn.execute("SELECT 1 FROM posted_jobs WHERE id=?", (key,)).fetchone()
-    conn.close()
-    return res
-
-
-def mark_posted(title, company, province, url):
-    key = hashlib.md5(f"{title}|{company}|{url}".encode()).hexdigest()
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("INSERT OR IGNORE INTO posted_jobs VALUES (?, ?, ?, ?, ?, ?)",
-                 (key, title, company, province, url, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-
-# ==================== Telegram ====================
-def send_message(chat_id, text):
+# ================== إرسال ==================
+def send(chat_id, text):
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
         "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
+        "text": text
     })
-
 
 def send_channel(text):
-    return requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    })
+    send(CHANNEL_ID, text)
 
+# ================== توليد المحتوى ==================
+def generate_content():
+    topic = random.choice(settings["topics"])
 
-# ==================== جلب الوظائف ====================
-def search_jobs(count, category, province):
-    jobs = []
+    if topic == "cv":
+        return """📄 نصيحة CV
 
-    # محاولة Gemini
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        prompt = f"اعطني {count} وظائف حقيقية في {province} تخصص {category} مع رابط التقديم بصيغة JSON"
+لا تكتب "خريج جديد" ❌  
+اكتب شنو تعرف تسوي ✔️  
 
-        r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
-        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+🎯 خليهم يشوفون قيمتك بسرعة"""
 
-        data = re.search(r'\[.*\]', txt, re.S)
-        if data:
-            jobs = json.loads(data.group())
-    except:
-        pass
+    elif topic == "tools":
+        return """🧰 موقع يفيدك:
 
-    # fallback API
-    if not jobs:
-        try:
-            r = requests.get(REMOTIVE_API).json()["jobs"][:count]
-            for j in r:
-                jobs.append({
-                    "title": j["title"],
-                    "company": j["company_name"],
-                    "link": j["url"]
-                })
-        except:
-            pass
+canva.com  
 
-    return jobs
+🔥 سوِ CV احترافي خلال دقائق"""
 
+    elif topic == "ai":
+        return """🤖 AI يفيدك بهالأشياء:
 
-# ==================== نشر ====================
-def post_jobs(chat_id, count, category, province):
-    send_message(chat_id, "🔎 جاري البحث...")
+✔️ كتابة CV  
+✔️ تحسين LinkedIn  
+✔️ كتابة رسالة تقديم  
 
-    jobs = search_jobs(count, category, province)
+💡 استغله صح"""
 
-    if not jobs:
-        send_message(chat_id, "❌ ماكو وظائف حالياً")
+    elif topic == "tips":
+        return """💡 نصيحة:
+
+لا ترسل نفس CV لكل وظيفة ❌  
+
+✔️ عدل حسب الوظيفة  
+✔️ ركز على المطلوب"""
+
+    else:
+        return """😂 معلومة:
+
+AI ممكن يرفض السيفي قبل لا يشوفه بشر 😅  
+
+#تقنية"""
+
+# ================== النشر ==================
+def post_loop():
+    global start_time
+
+    while settings["enabled"]:
+        if time.time() - start_time > settings["days"] * 86400:
+            send(ADMIN_ID, "⛔ انتهت مدة النشر التلقائي")
+            settings["enabled"] = False
+            break
+
+        content = generate_content()
+        send_channel(content)
+        send(ADMIN_ID, "✅ تم نشر بوست")
+
+        time.sleep(settings["interval"])
+
+# ================== التحكم ==================
+def handle(msg):
+    text = msg.get("text", "")
+    chat_id = msg["chat"]["id"]
+
+    if chat_id != ADMIN_ID:
         return
 
-    for j in jobs:
-        if is_posted(j["title"], j["company"], j["link"]):
-            continue
+    # تشغيل
+    if text == "/start":
+        send(chat_id, """🔥 تحكم البوت:
 
-        msg = f"💼 <b>{j['title']}</b>\n🏢 {j['company']}\n🔗 {j['link']}"
-        send_channel(msg)
-        mark_posted(j["title"], j["company"], province, j["link"])
-        time.sleep(2)
+تشغيل → start  
+إيقاف → stop  
 
-    send_message(chat_id, "✅ تم النشر")
+تغيير الوقت:
+interval 15
 
+تحديد الأيام:
+days 3
 
-# ==================== التشغيل ====================
+اختيار المواضيع:
+topics cv,ai
+
+المواضيع:
+cv - tools - ai - tips - fun
+""")
+
+    elif text == "start":
+        if not settings["enabled"]:
+            settings["enabled"] = True
+            start_time = time.time()
+            threading.Thread(target=post_loop).start()
+            send(chat_id, "🚀 تم تشغيل النشر التلقائي")
+
+    elif text == "stop":
+        settings["enabled"] = False
+        send(chat_id, "⛔ تم إيقاف النشر")
+
+    elif text.startswith("interval"):
+        minutes = int(text.split()[1])
+        settings["interval"] = minutes * 60
+        send(chat_id, f"⏱ تم ضبط الوقت: {minutes} دقيقة")
+
+    elif text.startswith("days"):
+        d = int(text.split()[1])
+        settings["days"] = d
+        send(chat_id, f"📅 النشر لمدة {d} يوم")
+
+    elif text.startswith("topics"):
+        t = text.split()[1]
+        settings["topics"] = t.split(",")
+        send(chat_id, f"🎯 المواضيع: {settings['topics']}")
+
+# ================== تشغيل ==================
 def main():
-    print("🚀 البوت يعمل...")
-    init_db()
-    add_admin(7590912344)
+    print("🚀 البوت شغال...")
+
+    offset = 0
 
     while True:
         try:
-            updates = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates").json()["result"]
-            for u in updates:
-                chat_id = u["message"]["chat"]["id"]
-                text = u["message"].get("text", "")
+            r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}").json()
 
-                if text == "/start":
-                    send_message(chat_id, "اهلا بيك ❤️ اكتب:\nانشر 5 وظائف برمجة في البصرة")
-
-                elif "انشر" in text:
-                    post_jobs(chat_id, 5, "عام", "العراق")
+            for u in r.get("result", []):
+                offset = u["update_id"] + 1
+                if "message" in u:
+                    handle(u["message"])
 
         except Exception as e:
             print("Error:", e)
 
         time.sleep(2)
-
 
 if __name__ == "__main__":
     main()
