@@ -9,7 +9,7 @@ import json
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-# ==================== الإعدادات ====================
+# ==================== الإعدادات المؤكدة ====================
 BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY"
 GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
 CHANNEL_ID = "@iraqjopsforall"
@@ -44,35 +44,47 @@ def mark_posted(job_id, title, category, location):
     conn.commit()
     conn.close()
 
-# ==================== جلب الوظائف (Scraping) ====================
+# ==================== جلب الوظائف (Scraping المطور) ====================
 def fetch_real_jobs(province_ar):
     query = f"وظائف-في-{province_ar.replace(' ', '-')}"
     url = f"https://iraq.tanqeeb.com/ar/s/{query}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # رأس متصفح كامل لتفادي الحظر
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
+    }
     
     try:
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            log.error(f"Status Code Error: {r.status_code}")
+            return []
+            
         soup = BeautifulSoup(r.content, 'html.parser')
+        # البحث عن كلاسات الوظائف في تنقيب
         items = soup.find_all('div', class_='item')
         
         jobs = []
-        for it in items[:5]:
+        for it in items[:10]: # جلب حتى 10 وظائف
             title_el = it.find('h2')
             link_el = it.find('a')
             if title_el and link_el:
+                link = link_el['href']
+                if not link.startswith('http'):
+                    link = "https://iraq.tanqeeb.com" + link
+                
                 jobs.append({
                     "title": title_el.get_text(strip=True),
-                    "link": "https://iraq.tanqeeb.com" + link_el['href'],
+                    "link": link,
                     "location": province_ar
                 })
         return jobs
     except Exception as e:
-        log.error(f"Error scraping: {e}")
+        log.error(f"Error scraping {province_ar}: {e}")
         return []
 
 # ==================== تحسين الصياغة بـ Gemini ====================
 def refine_with_gemini(job):
-    prompt = f"صغ هذا الإعلان الوظيفي العراقي بشكل جذاب لقناة تليجرام: {job['title']} في {job['location']}. الرابط: {job['link']}"
+    prompt = f"أنت خبير توظيف عراقي. صغ هذا الإعلان بشكل احترافي لقناة تليجرام مع إيموجي: {job['title']} في {job['location']}. الرابط: {job['link']}"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     try:
@@ -81,7 +93,7 @@ def refine_with_gemini(job):
     except:
         return f"📍 وظيفة في {job['location']}\n💼 {job['title']}\n🔗 للتقديم: {job['link']}"
 
-# ==================== التليجرام ====================
+# ==================== التليجرام والواجهة ====================
 def send_telegram(chat_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
@@ -89,9 +101,16 @@ def send_telegram(chat_id, text, reply_markup=None):
     return requests.post(url, json=payload)
 
 def get_main_keyboard():
+    # قائمة شاملة لكل محافظات العراق
     return {
-        "keyboard": [[{"text": "📍 البصرة"}, {"text": "📍 بغداد"}], 
-                     [{"text": "📍 أربيل"}, {"text": "📍 نينوى"}]],
+        "keyboard": [
+            [{"text": "📍 البصرة"}, {"text": "📍 بغداد"}, {"text": "📍 نينوى"}],
+            [{"text": "📍 أربيل"}, {"text": "📍 كركوك"}, {"text": "📍 النجف"}],
+            [{"text": "📍 كربلاء"}, {"text": "📍 ذي قار"}, {"text": "📍 ميسان"}],
+            [{"text": "📍 بابل"}, {"text": "📍 الأنبار"}, {"text": "📍 واسط"}],
+            [{"text": "📍 القادسية"}, {"text": "📍 صلاح الدين"}, {"text": "📍 دهوك"}],
+            [{"text": "📍 السليمانية"}, {"text": "📍 ديالى"}, {"text": "📍 المثنى"}]
+        ],
         "resize_keyboard": True
     }
 
@@ -102,25 +121,28 @@ def handle_message(update):
     text = msg.get("text", "")
 
     if text == "/start":
-        welcome_text = "أهلاً بك يا حيدر. تم تحديث البوت لجلب وظائف حقيقية."
-        send_telegram(chat_id, welcome_text, get_main_keyboard())
+        welcome = "🇮🇶 مرحباً بك في بوت وظائف العراق الشامل. اختر محافظة لجلب الوظائف الحقيقية الآن."
+        send_telegram(chat_id, welcome, get_main_keyboard())
     
     elif text.startswith("📍"):
         province = text.replace("📍 ", "")
-        send_telegram(chat_id, f"🔎 جاري البحث في {province}...")
+        send_telegram(chat_id, f"🔎 جاري البحث عن وظائف حقيقية في {province}...")
         jobs = fetch_real_jobs(province)
         if not jobs:
-            send_telegram(chat_id, "لا توجد وظائف جديدة حالياً.")
+            send_telegram(chat_id, "لم أجد وظائف حديثة حالياً. حاول مع محافظة أخرى.")
         else:
             for j in jobs:
                 post = refine_with_gemini(j)
                 send_telegram(chat_id, post)
+                # النشر في القناة
                 send_telegram(CHANNEL_ID, post)
+                time.sleep(2)
 
 # ==================== التشغيل ====================
 def auto_post_loop():
+    provinces = ["البصرة", "بغداد", "أربيل", "نينوى", "النجف", "كربلاء"]
     while True:
-        for prov in ["البصرة", "بغداد", "أربيل", "نينوى"]:
+        for prov in provinces:
             jobs = fetch_real_jobs(prov)
             for j in jobs:
                 job_id = hashlib.md5(j['link'].encode()).hexdigest()
@@ -128,7 +150,7 @@ def auto_post_loop():
                     msg = refine_with_gemini(j)
                     send_telegram(CHANNEL_ID, msg)
                     mark_posted(job_id, j['title'], "عام", prov)
-                    time.sleep(10)
+                    time.sleep(15)
         time.sleep(CHECK_INTERVAL)
 
 def get_updates(offset):
@@ -140,6 +162,7 @@ if __name__ == "__main__":
     init_db()
     threading.Thread(target=auto_post_loop, daemon=True).start()
     offset = 0
+    log.info("🚀 البوت يعمل بالنظام الشامل...")
     while True:
         updates = get_updates(offset)
         for up in updates:
