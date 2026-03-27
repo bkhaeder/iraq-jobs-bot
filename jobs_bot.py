@@ -35,26 +35,38 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ==================== قاعدة البيانات ====================
+# ==================== إدارة قاعدة البيانات ====================
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS posted_content (
-                hash_id TEXT PRIMARY KEY, topic TEXT, posted_at TEXT
+                hash_id TEXT PRIMARY KEY, 
+                topic TEXT, 
+                posted_at TEXT
             )
         """)
+        conn.commit()
 
 def is_duplicate(content: str) -> bool:
     h = hashlib.md5(content.encode("utf-8")).hexdigest()
-    with sqlite3.connect(DB_FILE) as conn:
-        return conn.execute("SELECT 1 FROM posted_content WHERE hash_id=?", (h,)).fetchone() is not None
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cur = conn.execute("SELECT 1 FROM posted_content WHERE hash_id=?", (h,))
+            return cur.fetchone() is not None
+    except Exception:
+        return False
 
 def save_posted(content: str, topic: str):
     h = hashlib.md5(content.encode("utf-8")).hexdigest()
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute("INSERT INTO posted_content VALUES (?, ?, ?)", (h, topic, datetime.now().isoformat()))
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("INSERT INTO posted_content VALUES (?, ?, ?)", 
+                         (h, topic, datetime.now().isoformat()))
+            conn.commit()
+    except Exception as e:
+        log.error(f"خطأ في حفظ البيانات: {e}")
 
-# ==================== خدمات API ====================
+# ==================== خدمات API والاتصال ====================
 def get_session():
     s = requests.Session()
     retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
@@ -65,33 +77,40 @@ HTTP = get_session()
 
 def generate_professional_tip(topic: str) -> str:
     prompt = (
-        f"أنت خبير توظيف في البصرة. اكتب نصيحة مهنية قصيرة ومفيدة جداً باللهجة العراقية 'البيضاء' عن: {topic}. "
-        "اجعل الأسلوب مشجعاً وقوياً ومختصراً جداً (ما لا يزيد عن 3 أسطر)."
+        f"أنت خبير توظيف عراقي محترف. اكتب نصيحة مهنية قصيرة ومفيدة جداً باللهجة العراقية 'البيضاء' عن: {topic}. "
+        "اجعل الأسلوب مشجعاً، قوياً، ومختصراً جداً (3 أسطر كحد أقصى). ابدأ النصيحة مباشرة بدون مقدمات."
     )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    # رفع الـ Temperature لتقليل التكرار
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.95}}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}], 
+        "generationConfig": {"temperature": 0.9}
+    }
     
     try:
         r = HTTP.post(url, json=payload, timeout=30)
         data = r.json()
-        if "candidates" in data:
+        if "candidates" in data and data["candidates"]:
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        log.error(f"خطأ Gemini: {e}")
+        log.error(f"خطأ في توليد النص من Gemini: {e}")
     return ""
 
 def send_post_with_buttons(text: str):
-    """إرسال الرسالة مع أزرار تفاعلية وروابط صحيحة"""
+    """إرسال المنشور مع الأزرار التفاعلية"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    clean_channel_link = f"https://t.me/{CHANNEL_ID[1:]}"
-    share_url = f"https://t.me/share/url?url={clean_channel_link}&text=انضم%20لقناة%20نصائح%20العمل%20في%20العراق"
+    
+    # تحويل اليوزرنيم لرابط نظيف
+    channel_user = CHANNEL_ID[1:] if CHANNEL_ID.startswith('@') else CHANNEL_ID
+    clean_link = f"https://t.me/{channel_user}"
+    
+    # رابط المشاركة
+    share_url = f"https://t.me/share/url?url={clean_link}&text=انصحكم%20بمتابعة%20هذه%20القناة%20لنصائح%20العمل"
 
     reply_markup = {
         "inline_keyboard": [
             [
                 {"text": "📢 مشاركة القناة", "url": share_url},
-                {"text": "💼 قائمة الوظائف", "url": clean_channel_link}
+                {"text": "💼 قائمة الوظائف", "url": clean_link}
             ]
         ]
     }
@@ -106,19 +125,25 @@ def send_post_with_buttons(text: str):
     
     try:
         r = HTTP.post(url, json=payload, timeout=20)
-        return r.json().get("ok", False)
+        res = r.json()
+        if not res.get("ok"):
+            log.error(f"فشل إرسال تليجرام: {res.get('description')}")
+        return res.get("ok", False)
     except Exception as e:
-        log.error(f"خطأ تليجرام: {e}")
+        log.error(f"خطأ في اتصال تليجرام: {e}")
         return False
 
-# ==================== المحرك الرئيسي المحدث ====================
+# ==================== المحرك الرئيسي (تشغيل مستمر) ====================
 def start_automated_system(interval_min: int):
-    log.info("🚀 نظام النشر التلقائي المحدث والمؤمن يعمل الآن...")
+    log.info(f"🚀 البوت يعمل الآن! النشر كل {interval_min} دقيقة.")
+    init_db() # التأكد من وجود قاعدة البيانات عند التشغيل
+    
     while True:
         try:
             success = False
             attempts = 0
             
+            # محاولة توليد محتوى غير مكرر (3 محاولات)
             while not success and attempts < 3:
                 topic = random.choice(TOPICS)
                 tip = generate_professional_tip(topic) 
@@ -128,9 +153,35 @@ def start_automated_system(interval_min: int):
                         f"✨ <b>نصيحة مهنية: {topic}</b>\n"
                         f"━━━━━━━━━━━━━━\n\n"
                         f"{tip}\n\n"
-                        f"📍 <i>بالتوفيق لجميع شبابنا</i>\n\n"
-                        f"🏷 #نصائح_حيدر #توظيف_العراق"
+                        f"📍 <i>بالتوفيق لجميع شبابنا في العراق</i>\n\n"
+                        f"🏷 #نصائح_عمل #العراق #مستقبلكم"
                     )
                     
                     if send_post_with_buttons(final_message):
                         save_posted(tip, topic)
+                        log.info(f"✅ تم نشر نصيحة عن: {topic}")
+                        success = True
+                    else:
+                        break # توقف إذا كان هناك خطأ في صلاحيات البوت
+                else:
+                    attempts += 1
+                    log.info(f"♻️ محتوى مكرر أو قصير، محاولة {attempts}/3...")
+                    time.sleep(3)
+
+            if not success:
+                log.warning("⚠️ تعذر النشر في هذه الدورة، سيتم المحاولة لاحقاً.")
+
+        except Exception as e:
+            log.error(f"⚠️ خطأ مفاجئ في الحلقة: {e}")
+            
+        log.info(f"💤 سأنتظر لمدة {interval_min} دقيقة...")
+        time.sleep(interval_min * 60)
+
+# ==================== نقطة الانطلاق ====================
+if __name__ == "__main__":
+    # تشغيل النشر كل 60 دقيقة
+    # يمكنك تغيير 60 لأي رقم تريده بالدقائق
+    try:
+        start_automated_system(interval_min=60)
+    except KeyboardInterrupt:
+        log.info("تم إيقاف البوت من قبل المستخدم.")
