@@ -9,14 +9,14 @@ from urllib3.util.retry import Retry
 BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY" 
 CHANNEL_ID = "@iraqjopsforall"
 GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
-DB_FILE = "iraq_bot_open.db"
+DB_FILE = "iraq_bot_final_pro.db"
 
 # حالة النظام
 state = {
     "active": False,
     "interval": 60, # دقائق
     "remaining": 0,
-    "custom_topic": None # إذا كان None سيعتمد البوت على ذكاء Gemini في اختيار المواضيع
+    "current_topic": "نصائح مهنية عامة"
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -54,34 +54,34 @@ def send_msg(chat_id, text, markup=None):
     if markup: data["reply_markup"] = json.dumps(markup)
     return requests.post(url, json=data)
 
-# ==================== محرك النشر التلقائي (الذكي) ====================
+# ==================== وظيفة النشر الموحدة ====================
+def perform_publish():
+    """تقوم بتوليد محتوى ونشره فوراً"""
+    topic = state["current_topic"]
+    prompt = f"أنت خبير تقني وتوظيف عراقي. اكتب محتوى مفيد جداً (نصيحة أو معلومة) باللهجة العراقية عن: {topic}. لا تزد عن 4 أسطر. اجعلها احترافية."
+    content = gemini_ask(prompt)
+    
+    if content and not is_duplicate(content):
+        msg = f"💡 <b>{topic}</b>\n━━━━━━━━━━━━━━\n\n{content}\n\n📢 @iraqjopsforall"
+        kb = {"inline_keyboard": [[{"text": "📢 مشاركة القناة", "url": f"https://t.me/share/url?url=https://t.me/iraqjopsforall"}]]}
+        
+        if send_msg(CHANNEL_ID, msg, kb).json().get("ok"):
+            mark_done(content)
+            return True
+    return False
+
+# ==================== محرك النشر التلقائي المجدول ====================
 def posting_engine():
     while True:
         if state["active"] and state["remaining"] > 0:
-            # إذا لم يحدد المستخدم موضوعاً، Gemini يبتكر موضوعاً جديداً في كل مرة
-            if not state["custom_topic"]:
-                topic_prompt = "أنت خبير توظيف عراقي، اقترح موضوعاً واحداً مهماً للنشر عنه اليوم (مثلاً: مقابلة عمل، مهارة تقنية، تطوير ذات). اكتب اسم الموضوع فقط بكلمتين."
-                current_topic = gemini_ask(topic_prompt) or "تطوير المهارات"
-            else:
-                current_topic = state["custom_topic"]
-
-            content_prompt = f"اكتب نصيحة مهنية عملية ومختصرة جداً باللهجة العراقية للشباب عن موضوع: {current_topic}. لا تزد عن 3 أسطر. اجعلها مشجعة."
-            content = gemini_ask(content_prompt)
-            
-            if content and not is_duplicate(content):
-                msg = f"✨ <b>نصيحة اليوم: {current_topic}</b>\n━━━━━━━━━━━━━━\n\n{content}\n\n📢 @iraqjopsforall"
-                kb = {"inline_keyboard": [[{"text": "📢 مشاركة القناة", "url": f"https://t.me/share/url?url=https://t.me/iraqjopsforall"}]]}
-                
-                if send_msg(CHANNEL_ID, msg, kb).json().get("ok"):
-                    mark_done(content)
-                    state["remaining"] -= 1
-                    log.info(f"نُشر منشور عن {current_topic}. المتبقي: {state['remaining']}")
-            
+            if perform_publish():
+                state["remaining"] -= 1
+                log.info(f"تم النشر التلقائي. المتبقي: {state['remaining']}")
             time.sleep(state["interval"] * 60)
         else:
-            time.sleep(10)
+            time.sleep(5)
 
-# ==================== لوحة التحكم المفتوحة ====================
+# ==================== لوحة التحكم المحدثة ====================
 def bot_control():
     offset = 0
     while True:
@@ -93,61 +93,72 @@ def bot_control():
                 if "message" in up:
                     msg = up["message"]
                     chat_id = msg["chat"]["id"]
-                    text = msg.get("text", "")
-
-                    if text == "/start":
+                    if msg.get("text") == "/start":
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "🚀 تشغيل/استئناف", "callback_data": "run"}, {"text": "⏸️ إيقاف مؤقت", "callback_data": "stop"}],
-                                [{"text": "📦 اختر حجم الحملة", "callback_data": "campaign_size"}],
-                                [{"text": "⏱️ ضبط الفاصل الزمني", "callback_data": "set_time"}],
+                                [{"text": "📝 اختر موضوع الحملة", "callback_data": "select_topic"}],
+                                [{"text": "📦 حجم الحملة", "callback_data": "campaign_size"}, {"text": "⏱️ وقت النشر", "callback_data": "set_time"}],
+                                [{"text": "⚡ انشر الآن (يدوي)", "callback_data": "publish_now"}],
                                 [{"text": "📊 حالة البوت", "callback_data": "status"}]
                             ]
                         }
-                        send_msg(chat_id, "أهلاً بك في لوحة تحكم القناة! (مفتوحة لجميع المستخدمين حالياً):", kb)
+                        send_msg(chat_id, "لوحة التحكم المتطورة - @iraqjopsforall\nاختر من الخيارات التالية:", kb)
 
                 elif "callback_query" in up:
                     query = up["callback_query"]
                     data = query["data"]
                     chat_id = query["message"]["chat"]["id"]
                     
-                    if data == "campaign_size":
+                    if data == "select_topic":
                         kb = {"inline_keyboard": [
-                            [{"text": "50 منشور", "callback_data": "size_50"}, {"text": "100 منشور", "callback_data": "size_100"}],
-                            [{"text": "200 منشور", "callback_data": "size_200"}, {"text": "250 منشور", "callback_data": "size_250"}]
+                            [{"text": "💻 تقنية وبرمجيات", "callback_data": "topic_تقنية وبرمجيات"}, {"text": "🤝 مقابلات العمل", "callback_data": "topic_خوض مقابلات العمل"}],
+                            [{"text": "🤖 ذكاء اصطناعي", "callback_data": "topic_ذكاء اصطناعي ومعلومات تقنية"}],
+                            [{"text": "🌐 نصائح عامة", "callback_data": "topic_نصائح مهنية عامة"}]
                         ]}
-                        send_msg(chat_id, "كم عدد المنشورات التي تود جدولتها؟", kb)
+                        send_msg(chat_id, "اختر الموضوع الذي سيتحدث عنه Gemini في هذه الحملة:", kb)
+
+                    elif data.startswith("topic_"):
+                        state["current_topic"] = data.split("_")[1]
+                        send_msg(chat_id, f"✅ تم تحديد الموضوع: {state['current_topic']}")
+
+                    elif data == "campaign_size":
+                        kb = {"inline_keyboard": [
+                            [{"text": "50", "callback_data": "size_50"}, {"text": "100", "callback_data": "size_100"}],
+                            [{"text": "250", "callback_data": "size_250"}, {"text": "500", "callback_data": "size_500"}]
+                        ]}
+                        send_msg(chat_id, "اختر عدد المنشورات المطلوب جدولتها:", kb)
                     
                     elif data.startswith("size_"):
-                        val = int(data.split("_")[1])
-                        state["remaining"] = val
+                        state["remaining"] = int(data.split("_")[1])
                         state["active"] = True
-                        send_msg(chat_id, f"✅ تم جدولة {val} منشور. البوت سيبدأ النشر الآن.")
+                        send_msg(chat_id, f"✅ تم جدولة {state['remaining']} منشور.")
 
                     elif data == "set_time":
                         kb = {"inline_keyboard": [
-                            [{"text": "30 دقيقة", "callback_data": "time_30"}, {"text": "ساعة واحدة", "callback_data": "time_60"}],
-                            [{"text": "ساعتين", "callback_data": "time_120"}, {"text": "6 ساعات", "callback_data": "time_360"}]
+                            [{"text": "⏰ كل دقيقة (فحص)", "callback_data": "time_1"}, {"text": "⏰ كل 30 دقيقة", "callback_data": "time_30"}],
+                            [{"text": "⏰ كل ساعة", "callback_data": "time_60"}, {"text": "⏰ كل 6 ساعات", "callback_data": "time_360"}]
                         ]}
-                        send_msg(chat_id, "اختر الوقت الفاصل بين المنشورات:", kb)
+                        send_msg(chat_id, "اختر الفاصل الزمني:", kb)
 
                     elif data.startswith("time_"):
-                        val = int(data.split("_")[1])
-                        state["interval"] = val
-                        send_msg(chat_id, f"⏱️ تم ضبط الفاصل الزمني إلى {val} دقيقة.")
+                        state["interval"] = int(data.split("_")[1])
+                        send_msg(chat_id, f"⏱️ تم ضبط الوقت كل {state['interval']} دقيقة.")
+
+                    elif data == "publish_now":
+                        send_msg(chat_id, "⏳ جاري توليد ونشر محتوى الآن...")
+                        if perform_publish():
+                            send_msg(chat_id, "✅ تم النشر اليدوي بنجاح!")
+                        else:
+                            send_msg(chat_id, "❌ فشل النشر (قد يكون المحتوى مكرراً).")
 
                     elif data == "status":
                         status = "✅ يعمل" if state["active"] else "🛑 متوقف"
-                        info = f"الحالة: {status}\nالمتبقي بالحملة: {state['remaining']}\nالفاصل: {state['interval']} دقيقة"
+                        info = f"الحالة: {status}\nالموضوع: {state['current_topic']}\nالمتبقي: {state['remaining']}\nالفاصل: {state['interval']} دقيقة"
                         send_msg(chat_id, info)
                     
-                    elif data == "run":
-                        state["active"] = True
-                        send_msg(chat_id, "🚀 تم تفعيل النشر التلقائي.")
-                    
-                    elif data == "stop":
-                        state["active"] = False
-                        send_msg(chat_id, "⏸️ تم إيقاف النشر مؤقتاً.")
+                    elif data == "run": state["active"] = True; send_msg(chat_id, "🚀 بدأ النشر.")
+                    elif data == "stop": state["active"] = False; send_msg(chat_id, "⏸️ تم الإيقاف.")
 
         except Exception as e: log.error(e)
         time.sleep(1)
@@ -155,5 +166,5 @@ def bot_control():
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=posting_engine, daemon=True).start()
-    log.info("البوت يعمل بنجاح وبدون قيود أدمن.")
+    log.info("البوت الاحترافي يعمل الآن...")
     bot_control()
