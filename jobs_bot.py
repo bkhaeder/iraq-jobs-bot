@@ -15,7 +15,6 @@ CHANNEL_ID = "@iraqjopsforall"
 GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
 DB_FILE = "iraq_job_tips_final.db"
 
-# مواضيع نصائح مخصصة للسوق العراقي
 TOPICS = [
     "تحسين الـ CV لشركات النفط",
     "مهارات المقابلة الشخصية (Interview)",
@@ -29,7 +28,6 @@ TOPICS = [
     "تحفيز يومي للشباب الباحث عن عمل"
 ]
 
-# إعدادات اللوغز (التسجيل)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -42,9 +40,7 @@ def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS posted_content (
-                hash_id TEXT PRIMARY KEY,
-                topic TEXT,
-                posted_at TEXT
+                hash_id TEXT PRIMARY KEY, topic TEXT, posted_at TEXT
             )
         """)
 
@@ -58,7 +54,7 @@ def save_posted(content: str, topic: str):
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute("INSERT INTO posted_content VALUES (?, ?, ?)", (h, topic, datetime.now().isoformat()))
 
-# ==================== الاتصال والمحتوى ====================
+# ==================== خدمات API ====================
 def get_session():
     s = requests.Session()
     retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
@@ -68,15 +64,13 @@ def get_session():
 HTTP = get_session()
 
 def generate_professional_tip(topic: str) -> str:
-    """توليد نصيحة احترافية باللهجة العراقية المحببة"""
     prompt = (
-        f"أنت استشاري موارد بشرية في العراق. اكتب نصيحة عملية وقصيرة جداً عن: {topic}. "
-        "استخدم اللهجة العراقية 'البيضاء' المفهومة. "
-        "ركز على خطوات تطبيقية (مثلاً: افعل كذا، لا تفعل كذا). "
-        "اجعل الأسلوب مشجعاً وقوياً. لا تزد عن 3 أسطر."
+        f"أنت خبير توظيف في البصرة. اكتب نصيحة مهنية قصيرة ومفيدة جداً باللهجة العراقية 'البيضاء' عن: {topic}. "
+        "اجعل الأسلوب مشجعاً وقوياً ومختصراً جداً (ما لا يزيد عن 3 أسطر)."
     )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.85}}
+    # رفع الـ Temperature لتقليل التكرار
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.95}}
     
     try:
         r = HTTP.post(url, json=payload, timeout=30)
@@ -88,15 +82,16 @@ def generate_professional_tip(topic: str) -> str:
     return ""
 
 def send_post_with_buttons(text: str):
-    """إرسال الرسالة مع أزرار تفاعلية"""
+    """إرسال الرسالة مع أزرار تفاعلية وروابط صحيحة"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    
-    # إعداد الأزرار (Inline Keyboard)
+    clean_channel_link = f"https://t.me/{CHANNEL_ID[1:]}"
+    share_url = f"https://t.me/share/url?url={clean_channel_link}&text=انضم%20لقناة%20نصائح%20العمل%20في%20العراق"
+
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "📢 مشاركة القناة", "url": f"https://t.me/share/url?url=https://t.me/{CHANNEL_ID[1:]}"},
-                {"text": "💼 قائمة الوظائف", "url": f"https://t.me/{CHANNEL_ID[1:]}"}
+                {"text": "📢 مشاركة القناة", "url": share_url},
+                {"text": "💼 قائمة الوظائف", "url": clean_channel_link}
             ]
         ]
     }
@@ -116,40 +111,26 @@ def send_post_with_buttons(text: str):
         log.error(f"خطأ تليجرام: {e}")
         return False
 
-# ==================== المحرك الرئيسي ====================
+# ==================== المحرك الرئيسي المحدث ====================
 def start_automated_system(interval_min: int):
-    log.info("🚀 نظام النشر التلقائي الاحترافي يعمل الآن...")
+    log.info("🚀 نظام النشر التلقائي المحدث والمؤمن يعمل الآن...")
     while True:
         try:
-            topic = random.choice(TOPICS)
-            tip = generate_professional_tip(topic)
+            success = False
+            attempts = 0
             
-            if tip and not is_duplicate(tip):
-                # تنسيق المنشور بشكل فخم
-                final_message = (
-                    f"✨ <b>نصيحة مهنية: {topic}</b>\n"
-                    f"━━━━━━━━━━━━━━\n\n"
-                    f"{tip}\n\n"
-                    f"📍 <i>نتمنى لكم كل التوفيق في مسيرتكم</i>\n\n"
-                    f"🏷 #نصائح_حيدر #توظيف_العراق #مستقبلكم"
-                )
+            while not success and attempts < 3:
+                topic = random.choice(TOPICS)
+                tip = generate_professional_tip(topic) 
                 
-                if send_post_with_buttons(final_message):
-                    save_posted(tip, topic)
-                    log.info(f"✅ تم النشر بنجاح: {topic}")
-                else:
-                    log.error("❌ فشل النشر في القناة.")
-            else:
-                log.info("♻️ محتوى مكرر، البحث عن نصيحة جديدة...")
-                continue # محاولة فورية لموضوع آخر
-
-        except Exception as e:
-            log.error(f"⚠️ خطأ في الحلقة الرئيسية: {e}")
-            
-        # الانتظار حتى الموعد القادم (مثلاً كل ساعة)
-        time.sleep(interval_min * 60)
-
-if __name__ == "__main__":
-    init_db()
-    # النشر كل 60 دقيقة لضمان تفاعل القناة بشكل طبيعي
-    start_automated_system(interval_min=60)
+                if tip and len(tip) > 10 and not is_duplicate(tip):
+                    final_message = (
+                        f"✨ <b>نصيحة مهنية: {topic}</b>\n"
+                        f"━━━━━━━━━━━━━━\n\n"
+                        f"{tip}\n\n"
+                        f"📍 <i>بالتوفيق لجميع شبابنا</i>\n\n"
+                        f"🏷 #نصائح_حيدر #توظيف_العراق"
+                    )
+                    
+                    if send_post_with_buttons(final_message):
+                        save_posted(tip, topic)
