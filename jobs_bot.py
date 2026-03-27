@@ -9,14 +9,14 @@ from urllib3.util.retry import Retry
 BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY" 
 CHANNEL_ID = "@iraqjopsforall"
 GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
-DB_FILE = "iraq_bot_pro.db"
+DB_FILE = "iraq_bot_open.db"
 
-# حالة النظام (في الذاكرة)
+# حالة النظام
 state = {
     "active": False,
     "interval": 60, # دقائق
     "remaining": 0,
-    "current_topic": "تطوير المهارات والتوظيف في العراق"
+    "custom_topic": None # إذا كان None سيعتمد البوت على ذكاء Gemini في اختيار المواضيع
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -54,28 +54,34 @@ def send_msg(chat_id, text, markup=None):
     if markup: data["reply_markup"] = json.dumps(markup)
     return requests.post(url, json=data)
 
-# ==================== محرك النشر التلقائي ====================
+# ==================== محرك النشر التلقائي (الذكي) ====================
 def posting_engine():
     while True:
         if state["active"] and state["remaining"] > 0:
-            # Gemini يختار موضوع عشوائي من اختصاصاتك ليولّد نصيحة
-            prompt = "أنت خبير توظيف عراقي. اختر موضوعاً عشوائياً (سي في، مقابلة، نفط، مهارات، لغة) واكتب نصيحة باللهجة العراقية للشباب. لا تزد عن 3 أسطر."
-            content = gemini_ask(prompt)
+            # إذا لم يحدد المستخدم موضوعاً، Gemini يبتكر موضوعاً جديداً في كل مرة
+            if not state["custom_topic"]:
+                topic_prompt = "أنت خبير توظيف عراقي، اقترح موضوعاً واحداً مهماً للنشر عنه اليوم (مثلاً: مقابلة عمل، مهارة تقنية، تطوير ذات). اكتب اسم الموضوع فقط بكلمتين."
+                current_topic = gemini_ask(topic_prompt) or "تطوير المهارات"
+            else:
+                current_topic = state["custom_topic"]
+
+            content_prompt = f"اكتب نصيحة مهنية عملية ومختصرة جداً باللهجة العراقية للشباب عن موضوع: {current_topic}. لا تزد عن 3 أسطر. اجعلها مشجعة."
+            content = gemini_ask(content_prompt)
             
             if content and not is_duplicate(content):
-                msg = f"💡 <b>نصيحة مهنية</b>\n━━━━━━━━━━━━━━\n\n{content}\n\n📢 @iraqjopsforall"
+                msg = f"✨ <b>نصيحة اليوم: {current_topic}</b>\n━━━━━━━━━━━━━━\n\n{content}\n\n📢 @iraqjopsforall"
                 kb = {"inline_keyboard": [[{"text": "📢 مشاركة القناة", "url": f"https://t.me/share/url?url=https://t.me/iraqjopsforall"}]]}
                 
                 if send_msg(CHANNEL_ID, msg, kb).json().get("ok"):
                     mark_done(content)
                     state["remaining"] -= 1
-                    log.info(f"نُشر منشور. المتبقي في الحملة: {state['remaining']}")
+                    log.info(f"نُشر منشور عن {current_topic}. المتبقي: {state['remaining']}")
             
             time.sleep(state["interval"] * 60)
         else:
             time.sleep(10)
 
-# ==================== لوحة التحكم والتعامل مع الأوامر ====================
+# ==================== لوحة التحكم المفتوحة ====================
 def bot_control():
     offset = 0
     while True:
@@ -84,67 +90,64 @@ def bot_control():
             for up in updates.get("result", []):
                 offset = up["update_id"] + 1
                 
-                # التعامل مع الرسائل النصية
                 if "message" in up:
                     msg = up["message"]
-                    uid = msg.get("from", {}).get("id")
-                    if uid != ADMIN_ID: continue
-                    
+                    chat_id = msg["chat"]["id"]
                     text = msg.get("text", "")
+
                     if text == "/start":
                         kb = {
                             "inline_keyboard": [
-                                [{"text": "🚀 تشغيل التلقائي", "callback_data": "run"}, {"text": "⏸️ إيقاف", "callback_data": "stop"}],
+                                [{"text": "🚀 تشغيل/استئناف", "callback_data": "run"}, {"text": "⏸️ إيقاف مؤقت", "callback_data": "stop"}],
                                 [{"text": "📦 اختر حجم الحملة", "callback_data": "campaign_size"}],
-                                [{"text": "⏱️ ضبط الوقت", "callback_data": "set_time"}],
-                                [{"text": "📊 الحالة الحالية", "callback_data": "status"}]
+                                [{"text": "⏱️ ضبط الفاصل الزمني", "callback_data": "set_time"}],
+                                [{"text": "📊 حالة البوت", "callback_data": "status"}]
                             ]
                         }
-                        send_msg(ADMIN_ID, "أهلاً حيدر! لوحة تحكم القناة جاهزة:", kb)
+                        send_msg(chat_id, "أهلاً بك في لوحة تحكم القناة! (مفتوحة لجميع المستخدمين حالياً):", kb)
 
-                # التعامل مع ضغطات الأزرار (Callback)
                 elif "callback_query" in up:
                     query = up["callback_query"]
                     data = query["data"]
-                    qid = query["id"]
+                    chat_id = query["message"]["chat"]["id"]
                     
                     if data == "campaign_size":
                         kb = {"inline_keyboard": [
                             [{"text": "50 منشور", "callback_data": "size_50"}, {"text": "100 منشور", "callback_data": "size_100"}],
                             [{"text": "200 منشور", "callback_data": "size_200"}, {"text": "250 منشور", "callback_data": "size_250"}]
                         ]}
-                        send_msg(ADMIN_ID, "اختر عدد المنشورات المطلوب جدولتها في الحملة:", kb)
+                        send_msg(chat_id, "كم عدد المنشورات التي تود جدولتها؟", kb)
                     
                     elif data.startswith("size_"):
                         val = int(data.split("_")[1])
                         state["remaining"] = val
                         state["active"] = True
-                        send_msg(ADMIN_ID, f"⚡ تم حجز حملة بـ {val} منشور. جاري البدء...")
+                        send_msg(chat_id, f"✅ تم جدولة {val} منشور. البوت سيبدأ النشر الآن.")
 
                     elif data == "set_time":
                         kb = {"inline_keyboard": [
-                            [{"text": "كل 30 د", "callback_data": "time_30"}, {"text": "كل ساعة", "callback_data": "time_60"}],
-                            [{"text": "كل ساعتين", "callback_data": "time_120"}, {"text": "كل 6 ساعات", "callback_data": "time_360"}]
+                            [{"text": "30 دقيقة", "callback_data": "time_30"}, {"text": "ساعة واحدة", "callback_data": "time_60"}],
+                            [{"text": "ساعتين", "callback_data": "time_120"}, {"text": "6 ساعات", "callback_data": "time_360"}]
                         ]}
-                        send_msg(ADMIN_ID, "اختر الفاصل الزمني بين المنشورات:", kb)
+                        send_msg(chat_id, "اختر الوقت الفاصل بين المنشورات:", kb)
 
                     elif data.startswith("time_"):
                         val = int(data.split("_")[1])
                         state["interval"] = val
-                        send_msg(ADMIN_ID, f"⏱️ تم ضبط الفاصل الزمني إلى {val} دقيقة.")
+                        send_msg(chat_id, f"⏱️ تم ضبط الفاصل الزمني إلى {val} دقيقة.")
 
                     elif data == "status":
-                        status = "✅ تعمل" if state["active"] else "🛑 متوقفة"
-                        info = f"حالة البوت: {status}\nالمتبقي بالحملة: {state['remaining']}\nالفاصل: {state['interval']} دقيقة"
-                        send_msg(ADMIN_ID, info)
+                        status = "✅ يعمل" if state["active"] else "🛑 متوقف"
+                        info = f"الحالة: {status}\nالمتبقي بالحملة: {state['remaining']}\nالفاصل: {state['interval']} دقيقة"
+                        send_msg(chat_id, info)
                     
                     elif data == "run":
                         state["active"] = True
-                        send_msg(ADMIN_ID, "🚀 تم استئناف العمل.")
+                        send_msg(chat_id, "🚀 تم تفعيل النشر التلقائي.")
                     
                     elif data == "stop":
                         state["active"] = False
-                        send_msg(ADMIN_ID, "⏸️ تم إيقاف العمل مؤقتاً.")
+                        send_msg(chat_id, "⏸️ تم إيقاف النشر مؤقتاً.")
 
         except Exception as e: log.error(e)
         time.sleep(1)
@@ -152,5 +155,5 @@ def bot_control():
 if __name__ == "__main__":
     init_db()
     threading.Thread(target=posting_engine, daemon=True).start()
-    log.info("البوت يعمل.. أرسل /start في تليجرام للتحكم.")
+    log.info("البوت يعمل بنجاح وبدون قيود أدمن.")
     bot_control()
