@@ -8,86 +8,77 @@ BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY"
 CHANNEL_ID = "@iraqjopsforall"
 ADMIN_ID = 7590912344
 
-# ================== حالة البوت ==================
+# ================== الحالة ==================
 settings = {
     "enabled": False,
-    "interval": 900,   # 15 دقيقة
-    "days": 1,
+    "interval": 900,
     "topics": ["cv", "tools", "ai", "tips", "fun"]
 }
 
-start_time = None
+last_post_time = 0
 
-# ================== إرسال ==================
-def send(chat_id, text):
-    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+# ================== ارسال ==================
+def send(chat_id, text, keyboard=None):
+    data = {
         "chat_id": chat_id,
         "text": text
-    })
+    }
+    if keyboard:
+        data["reply_markup"] = keyboard
 
-def send_channel(text):
-    send(CHANNEL_ID, text)
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=data)
 
-# ================== توليد المحتوى ==================
-def generate_content():
+# ================== الكيبورد ==================
+def main_keyboard():
+    return {
+        "keyboard": [
+            [{"text": "🚀 تشغيل"}, {"text": "⛔ إيقاف"}],
+            [{"text": "⏱ كل 15 دقيقة"}, {"text": "⏱ كل 30 دقيقة"}],
+            [{"text": "🎯 CV"}, {"text": "🤖 AI"}, {"text": "💡 نصائح"}],
+            [{"text": "📢 نشر الآن"}]
+        ],
+        "resize_keyboard": True
+    }
+
+# ================== المحتوى ==================
+def generate():
     topic = random.choice(settings["topics"])
 
     if topic == "cv":
-        return """📄 نصيحة CV
+        return "📄 نصيحة CV:\nلا تكتب خريج بس، اكتب شنو تعرف تسوي 🔥"
 
-لا تكتب "خريج جديد" ❌  
-اكتب شنو تعرف تسوي ✔️  
+    if topic == "ai":
+        return "🤖 استخدم AI حتى تكتب CV وتطور نفسك بسهولة"
 
-🎯 خليهم يشوفون قيمتك بسرعة"""
+    if topic == "tools":
+        return "🧰 استخدم Canva حتى تسوي CV احترافي خلال دقائق"
 
-    elif topic == "tools":
-        return """🧰 موقع يفيدك:
+    if topic == "tips":
+        return "💡 لا ترسل نفس CV لكل شركة، عدله حسب الوظيفة"
 
-canva.com  
+    return "😂 معلومة: AI ممكن يرفض CV قبل ما يشوفه بشر 😅"
 
-🔥 سوِ CV احترافي خلال دقائق"""
+# ================== نشر ==================
+def post():
+    global last_post_time
 
-    elif topic == "ai":
-        return """🤖 AI يفيدك بهالأشياء:
+    if not settings["enabled"]:
+        return
 
-✔️ كتابة CV  
-✔️ تحسين LinkedIn  
-✔️ كتابة رسالة تقديم  
+    if time.time() - last_post_time < settings["interval"]:
+        return
 
-💡 استغله صح"""
+    msg = generate()
 
-    elif topic == "tips":
-        return """💡 نصيحة:
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+        "chat_id": CHANNEL_ID,
+        "text": msg
+    })
 
-لا ترسل نفس CV لكل وظيفة ❌  
+    print("✅ نشر")
+    last_post_time = time.time()
 
-✔️ عدل حسب الوظيفة  
-✔️ ركز على المطلوب"""
-
-    else:
-        return """😂 معلومة:
-
-AI ممكن يرفض السيفي قبل لا يشوفه بشر 😅  
-
-#تقنية"""
-
-# ================== النشر ==================
-def post_loop():
-    global start_time
-
-    while settings["enabled"]:
-        if time.time() - start_time > settings["days"] * 86400:
-            send(ADMIN_ID, "⛔ انتهت مدة النشر التلقائي")
-            settings["enabled"] = False
-            break
-
-        content = generate_content()
-        send_channel(content)
-        send(ADMIN_ID, "✅ تم نشر بوست")
-
-        time.sleep(settings["interval"])
-
-# ================== التحكم ==================
+# ================== معالجة ==================
 def handle(msg):
     text = msg.get("text", "")
     chat_id = msg["chat"]["id"]
@@ -95,66 +86,64 @@ def handle(msg):
     if chat_id != ADMIN_ID:
         return
 
-    # تشغيل
     if text == "/start":
-        send(chat_id, """🔥 تحكم البوت:
+        send(chat_id, "🔥 لوحة التحكم", main_keyboard())
 
-تشغيل → start  
-إيقاف → stop  
+    elif text == "🚀 تشغيل":
+        settings["enabled"] = True
+        send(chat_id, "✅ تم التشغيل")
 
-تغيير الوقت:
-interval 15
-
-تحديد الأيام:
-days 3
-
-اختيار المواضيع:
-topics cv,ai
-
-المواضيع:
-cv - tools - ai - tips - fun
-""")
-
-    elif text == "start":
-        if not settings["enabled"]:
-            settings["enabled"] = True
-            start_time = time.time()
-            threading.Thread(target=post_loop).start()
-            send(chat_id, "🚀 تم تشغيل النشر التلقائي")
-
-    elif text == "stop":
+    elif text == "⛔ إيقاف":
         settings["enabled"] = False
-        send(chat_id, "⛔ تم إيقاف النشر")
+        send(chat_id, "⛔ تم الإيقاف")
 
-    elif text.startswith("interval"):
-        minutes = int(text.split()[1])
-        settings["interval"] = minutes * 60
-        send(chat_id, f"⏱ تم ضبط الوقت: {minutes} دقيقة")
+    elif text == "⏱ كل 15 دقيقة":
+        settings["interval"] = 900
+        send(chat_id, "⏱ كل 15 دقيقة")
 
-    elif text.startswith("days"):
-        d = int(text.split()[1])
-        settings["days"] = d
-        send(chat_id, f"📅 النشر لمدة {d} يوم")
+    elif text == "⏱ كل 30 دقيقة":
+        settings["interval"] = 1800
+        send(chat_id, "⏱ كل 30 دقيقة")
 
-    elif text.startswith("topics"):
-        t = text.split()[1]
-        settings["topics"] = t.split(",")
-        send(chat_id, f"🎯 المواضيع: {settings['topics']}")
+    elif text == "🎯 CV":
+        settings["topics"] = ["cv"]
+        send(chat_id, "🎯 محتوى CV فقط")
+
+    elif text == "🤖 AI":
+        settings["topics"] = ["ai"]
+        send(chat_id, "🤖 محتوى AI فقط")
+
+    elif text == "💡 نصائح":
+        settings["topics"] = ["tips"]
+        send(chat_id, "💡 نصائح فقط")
+
+    elif text == "📢 نشر الآن":
+        msg = generate()
+        send(chat_id, "📢 تم النشر")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            "chat_id": CHANNEL_ID,
+            "text": msg
+        })
 
 # ================== تشغيل ==================
 def main():
-    print("🚀 البوت شغال...")
+    global last_post_time
+    print("🚀 البوت شغال")
 
     offset = 0
 
     while True:
         try:
+            # جلب الرسائل
             r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}").json()
 
             for u in r.get("result", []):
                 offset = u["update_id"] + 1
                 if "message" in u:
                     handle(u["message"])
+
+            # تشغيل النشر التلقائي
+            post()
 
         except Exception as e:
             print("Error:", e)
