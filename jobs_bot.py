@@ -1,127 +1,142 @@
 import requests
+from bs4 import BeautifulSoup
 import time
-import logging
-import re
+import json
+import random
 
-# ==================== الإعدادات ====================
-BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY"  # ⚠️ على مسؤوليتك
+BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY"
 CHANNEL_ID = "@iraqjopsforall"
-ADMIN_ID = 7590912344
-USER_STATE = {}
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+posted_jobs = set()
 
-# ==================== قنوات مصدر الوظائف ====================
-JOB_CHANNELS = [
-    "@JobsBaghdad",
-    "@BasraJobs",
-    "@ErbilJobs",
-    "@NajafJobs"
+# المصادر
+SOURCES = [
+    {"name": "IraqiJobs", "url": "https://www.iraqijobs.com/jobs/"},
+    {"name": "Akhtaboot", "url": "https://www.akhtaboot.com/en/iraq/jobs/"},
+    {"name": "Bayt", "url": "https://www.bayt.com/en/iraq/jobs/"},
+    {"name": "Forasna", "url": "https://forasna.com/"},
+    {"name": "Wuzzuf", "url": "https://wuzzuf.net/search/jobs/?q=iraq"}
 ]
 
-# ==================== صياغة المنشور ====================
-def format_job_post(text, province, sector):
-    return f"""💼 *وظيفة جديدة*
-📍 المحافظة: {province}
-🏷️ القطاع: {sector}
-📝 التفاصيل: {text}"""
+# المحافظات والقطاعات لتصنيف الوظائف
+PROVINCES = ["بغداد", "البصرة", "أربيل", "نينوى", "النجف", "كربلاء", "كركوك", "ميسان"]
+SECTORS = ["نفط وغاز", "هندسة", "إدارة ومحاسبة", "طب وصيدلة", "تعليم وتدريس",
+           "مبيعات وتسويق", "حرفيين وفنيين", "سائقين وحراسات"]
 
-# ==================== لوحة التحكم ====================
-def get_keyboard(options):
-    return {
-        "keyboard": [[{"text": opt}] for opt in options],
-        "resize_keyboard": True,
-        "one_time_keyboard": True
-    }
+# ------------------- دوال جلب الوظائف لكل موقع -------------------
 
-def send_telegram(chat_id, text, markup=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": markup}
-    return requests.post(url, json=payload)
-
-# ==================== جلب الوظائف من القنوات ====================
-def fetch_jobs_from_channels(limit=5):
-    """
-    يسحب آخر الوظائف من القنوات المعرفة في JOB_CHANNELS.
-    """
+def fetch_iraqijobs(limit=10):
+    res = requests.get("https://www.iraqijobs.com/jobs/")
+    soup = BeautifulSoup(res.text, "html.parser")
     jobs = []
-    for channel in JOB_CHANNELS:
+    for job_card in soup.select(".job_listing")[:limit]:
         try:
-            r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100")
-            data = r.json()
-            for update in reversed(data.get("result", [])):
-                if "message" in update and "text" in update["message"]:
-                    msg = update["message"]["text"]
-                    if "وظيفة" in msg or "Job" in msg:
-                        jobs.append(msg)
-                        if len(jobs) >= limit:
-                            return jobs
-        except Exception as e:
-            logging.error(f"Error fetching from {channel}: {e}")
+            title = job_card.select_one(".job_title").text.strip()
+            company = job_card.select_one(".company_name").text.strip()
+            link = job_card.select_one("a")["href"]
+            jobs.append({"title": title, "company": company, "contact": link})
+        except: 
+            continue
     return jobs
 
-# ==================== معالجة المسار المرحلي ====================
-def handle_updates(update):
-    if "message" not in update: return
-    msg = update["message"]
-    chat_id = msg["chat"]["id"]
-    text = msg.get("text", "")
+def fetch_akhtaboot(limit=10):
+    res = requests.get("https://www.akhtaboot.com/en/iraq/jobs/")
+    soup = BeautifulSoup(res.text, "html.parser")
+    jobs = []
+    for job_card in soup.select(".job-card")[:limit]:
+        try:
+            title = job_card.select_one(".job-title").text.strip()
+            company = job_card.select_one(".company-name").text.strip()
+            link = "https://www.akhtaboot.com" + job_card.select_one("a")["href"]
+            jobs.append({"title": title, "company": company, "contact": link})
+        except: continue
+    return jobs
 
-    if chat_id != ADMIN_ID: return
+def fetch_bayt(limit=10):
+    res = requests.get("https://www.bayt.com/en/iraq/jobs/")
+    soup = BeautifulSoup(res.text, "html.parser")
+    jobs = []
+    for job_card in soup.select(".jobCard")[:limit]:
+        try:
+            title = job_card.select_one(".jobTitle").text.strip()
+            company = job_card.select_one(".companyName").text.strip()
+            link = "https://www.bayt.com" + job_card.select_one("a")["href"]
+            jobs.append({"title": title, "company": company, "contact": link})
+        except: continue
+    return jobs
 
-    if text == "/start" or text == "🔄 إلغاء والبدء من جديد":
-        USER_STATE[chat_id] = {"step": "PROVINCE"}
-        provinces = ["البصرة", "بغداد", "أربيل", "نينوى", "النجف", "كربلاء", "كركوك", "ميسان"]
-        send_telegram(chat_id, "🇮🇶 **مرحبا بك في لوحة تحكم وظائف العراق**\n\n1️⃣ اختر المحافظة:", get_keyboard(provinces))
+def fetch_forasna(limit=10):
+    res = requests.get("https://forasna.com/")
+    soup = BeautifulSoup(res.text, "html.parser")
+    jobs = []
+    for job_card in soup.select(".job-item")[:limit]:
+        try:
+            title = job_card.select_one(".job-title").text.strip()
+            company = job_card.select_one(".job-company").text.strip()
+            link = job_card.select_one("a")["href"]
+            jobs.append({"title": title, "company": company, "contact": link})
+        except: continue
+    return jobs
 
-    elif USER_STATE.get(chat_id, {}).get("step") == "PROVINCE":
-        USER_STATE[chat_id]["province"] = text
-        USER_STATE[chat_id]["step"] = "SECTOR"
-        sectors = ["نفط وغاز", "هندسة", "إدارة ومحاسبة", "طب وصيدلة", "تعليم وتدريس", "مبيعات وتسويق", "حرفيين وفنيين", "سائقين وحراسات"]
-        send_telegram(chat_id, f"✅ تم اختيار {text}\n\n2️⃣ اختر قطاع الوظائف:", get_keyboard(sectors))
+def fetch_wuzzuf(limit=10):
+    res = requests.get("https://wuzzuf.net/search/jobs/?q=iraq")
+    soup = BeautifulSoup(res.text, "html.parser")
+    jobs = []
+    for job_card in soup.select(".css-1gatmva")[:limit]:
+        try:
+            title = job_card.select_one("h2").text.strip()
+            company = job_card.select_one("a.css-17s97q8").text.strip()
+            link = "https://wuzzuf.net" + job_card.select_one("a.css-o171kl")["href"]
+            jobs.append({"title": title, "company": company, "contact": link})
+        except: continue
+    return jobs
 
-    elif USER_STATE.get(chat_id, {}).get("step") == "SECTOR":
-        USER_STATE[chat_id]["sector"] = text
-        USER_STATE[chat_id]["step"] = "LIMIT"
-        send_telegram(chat_id, "3️⃣ كم عدد الوظائف التي تريد جلبها؟", get_keyboard(["5 وظائف", "10 وظائف", "20 وظيفة"]))
+# ------------------- دوال الذكاء لصياغة الرسائل -------------------
 
-    elif USER_STATE.get(chat_id, {}).get("step") == "LIMIT":
-        limit = int(re.search(r'\d+', text).group())
-        USER_STATE[chat_id]["limit"] = limit
-        send_telegram(chat_id, "🔎 جاري استخراج الوظائف وطرق التقديم...")
+def categorize_job(job):
+    # تصنيف عشوائي مؤقت حسب المحافظة والقطاع (يمكن تطويره لاحقاً باستخدام NLP)
+    province = random.choice(PROVINCES)
+    sector = random.choice(SECTORS)
+    return province, sector
 
-        # جلب الوظائف من القنوات
-        raw_jobs = fetch_jobs_from_channels(limit)
+def format_job_ai(job):
+    province, sector = categorize_job(job)
+    return f"💼 *{job['title']}*\n🏢 الشركة: {job['company']}\n📍 المحافظة: {province}\n🏷️ القطاع: {sector}\n🔗 التقديم: {job['contact']}"
 
-        if not raw_jobs:
-            send_telegram(chat_id, "❌ لم أجد نتائج حالياً، حاول مرة أخرى.", get_keyboard(["🔄 إلغاء والبدء من جديد"]))
-            return
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHANNEL_ID, "text": msg, "parse_mode": "Markdown"})
 
-        USER_STATE[chat_id]["posts"] = [format_job_post(job, USER_STATE[chat_id]["province"], USER_STATE[chat_id]["sector"]) for job in raw_jobs]
-        USER_STATE[chat_id]["step"] = "PUBLISH"
-        send_telegram(chat_id, f"✅ تم العثور على {len(raw_jobs)} وظيفة.\n\n4️⃣ اختر طريقة النشر:", get_keyboard(["⚡️ نشر يدوي فوراً", "📅 جدولة ذكية"]))
+# ------------------- الحلقة الرئيسية -------------------
 
-    elif USER_STATE.get(chat_id, {}).get("step") == "PUBLISH":
-        if "نشر يدوي" in text:
-            send_telegram(chat_id, "🚀 جاري النشر في القناة...")
-            for post in USER_STATE[chat_id]["posts"]:
-                send_telegram(CHANNEL_ID, post)
-                time.sleep(2)
-            send_telegram(chat_id, "✅ تم نشر جميع الوظائف!", get_keyboard(["🔄 إلغاء والبدء من جديد"]))
-        else:
-            send_telegram(chat_id, "📅 تم تفعيل الجدولة الذكية. سيتم النشر تلقائياً.", get_keyboard(["🔄 إلغاء والبدء من جديد"]))
-        USER_STATE[chat_id] = {}
+def scrape_and_post():
+    all_jobs = []
+    all_jobs.extend(fetch_iraqijobs())
+    all_jobs.extend(fetch_akhtaboot())
+    all_jobs.extend(fetch_bayt())
+    all_jobs.extend(fetch_forasna())
+    all_jobs.extend(fetch_wuzzuf())
 
-# ==================== تشغيل البوت ====================
+    print(f"🟢 جلب {len(all_jobs)} وظيفة جديدة...")
+
+    for job in all_jobs:
+        job_id = job['contact']
+        if job_id not in posted_jobs:
+            msg = format_job_ai(job)
+            send_telegram(msg)
+            posted_jobs.add(job_id)
+            time.sleep(random.randint(2, 5))  # فاصل عشوائي لتجنب السبام
+
+    print("✅ تم نشر جميع الوظائف الجديدة.")
+
 if __name__ == "__main__":
-    offset = 0
-    print("🚀 البوت يعمل الآن...")
     while True:
         try:
-            r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=20").json()
-            for update in r.get("result", []):
-                offset = update["update_id"] + 1
-                handle_updates(update)
+            scrape_and_post()
+            # جدولة ذكية على مدار اليوم
+            sleep_time = random.randint(1800, 3600)  # 30-60 دقيقة
+            print(f"⏳ الانتظار {sleep_time//60} دقيقة قبل التحديث القادم...")
+            time.sleep(sleep_time)
         except Exception as e:
-            print(f"Connection Error: {e}")
-        time.sleep(1)
+            print(f"❌ خطأ: {e}")
+            time.sleep(60)
