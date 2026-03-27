@@ -1,198 +1,156 @@
 #!/usr/bin/env python3
-"""
-بوت قناة نصائح العمل في العراق - @iraqjopsforall
-نسخة احترافية مستقرة 2026 - حيدر باسم
-توليد نصائح بذكاء اصطناعي + أزرار تفاعلية + منع تكرار
-"""
-
-import time
-import hashlib
-import logging
-import sqlite3
-import random
-import json
+import time, hashlib, logging, sqlite3, random, json, threading
 from datetime import datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ==================== الإعدادات الثابتة (بياناتك) ====================
+# ==================== الإعدادات الثابتة ====================
 BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY" 
 CHANNEL_ID = "@iraqjopsforall"
 GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
-DB_FILE = "iraq_job_tips_final.db"
+DB_FILE = "iraq_bot_pro.db"
 
-# مواضيع النصائح المخصصة للشباب العراقي
-TOPICS = [
-    "تحسين الـ CV لشركات النفط والغاز",
-    "مهارات المقابلة الشخصية (Interview)",
-    "أسرار التقديم على الشركات الأجنبية في البصرة",
-    "تعلم الإنجليزية المهنية وتطوير اللغة",
-    "إدارة الوقت والإنتاجية أثناء البحث عن عمل",
-    "استخدام LinkedIn للعثور على فرص حقيقية",
-    "العمل الحر (Freelance) والربح من الإنترنت",
-    "كيفية التفاوض على الراتب والمميزات",
-    "أهمية الشهادات المهنية مثل PMP و HSE",
-    "نصيحة تحفيزية لصباح الباحثين عن عمل"
-]
+# حالة النظام (في الذاكرة)
+state = {
+    "active": False,
+    "interval": 60, # دقائق
+    "remaining": 0,
+    "current_topic": "تطوير المهارات والتوظيف في العراق"
+}
 
-# إعدادات اللوغز (التسجيل)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("bot_activity.log", encoding="utf-8"), logging.StreamHandler()],
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# ==================== إدارة قاعدة البيانات ====================
+# ==================== قاعدة البيانات ====================
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS posted_content (
-                hash_id TEXT PRIMARY KEY, 
-                topic TEXT, 
-                posted_at TEXT
-            )
-        """)
+        conn.execute("CREATE TABLE IF NOT EXISTS posted (h TEXT PRIMARY KEY)")
         conn.commit()
 
-def is_duplicate(content: str) -> bool:
-    h = hashlib.md5(content.encode("utf-8")).hexdigest()
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            cur = conn.execute("SELECT 1 FROM posted_content WHERE hash_id=?", (h,))
-            return cur.fetchone() is not None
-    except Exception:
-        return False
+def is_duplicate(txt):
+    h = hashlib.md5(txt.encode()).hexdigest()
+    with sqlite3.connect(DB_FILE) as conn:
+        return conn.execute("SELECT 1 FROM posted WHERE h=?", (h,)).fetchone() is not None
 
-def save_posted(content: str, topic: str):
-    h = hashlib.md5(content.encode("utf-8")).hexdigest()
-    try:
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("INSERT INTO posted_content VALUES (?, ?, ?)", 
-                         (h, topic, datetime.now().isoformat()))
-            conn.commit()
-    except Exception as e:
-        log.error(f"خطأ في حفظ البيانات: {e}")
+def mark_done(txt):
+    h = hashlib.md5(txt.encode()).hexdigest()
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute("INSERT OR IGNORE INTO posted VALUES (?)", (h,))
+        conn.commit()
 
-# ==================== خدمات API والاتصال ====================
-def get_session():
-    s = requests.Session()
-    retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
-    s.mount("https://", HTTPAdapter(max_retries=retries))
-    return s
-
-HTTP = get_session()
-
-def generate_professional_tip(topic: str) -> str:
-    """توليد نصيحة احترافية باللهجة العراقية باستخدام Gemini"""
-    prompt = (
-        f"أنت خبير توظيف عراقي محترف جداً. اكتب نصيحة مهنية عملية ومفيدة باللهجة العراقية 'البيضاء' عن موضوع: {topic}. "
-        "اجعل الأسلوب قوياً ومختصراً (3 أسطر كحد أقصى). ابدأ النصيحة مباشرة بدون مقدمات رسمية."
-    )
+# ==================== محرك Gemini & Telegram ====================
+def gemini_ask(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}], 
-        "generationConfig": {"temperature": 0.9}
-    }
-    
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 1.0}}
     try:
-        r = HTTP.post(url, json=payload, timeout=30)
-        data = r.json()
-        if "candidates" in data and data["candidates"]:
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        log.error(f"خطأ في Gemini API: {e}")
-    return ""
+        r = requests.post(url, json=payload, timeout=30)
+        return r.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+    except: return None
 
-def send_post_with_buttons(text: str):
-    """إرسال المنشور مع الأزرار التفاعلية - حل مشكلة اختفاء الأزرار"""
+def send_msg(chat_id, text, markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    
-    # معالجة روابط القناة
-    channel_user = CHANNEL_ID[1:] if CHANNEL_ID.startswith('@') else CHANNEL_ID
-    clean_link = f"https://t.me/{channel_user}"
-    share_url = f"https://t.me/share/url?url={clean_link}&text=انصحكم%20بمتابعة%20هذه%20القناة%20لنصائح%20العمل"
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if markup: data["reply_markup"] = json.dumps(markup)
+    return requests.post(url, json=data)
 
-    # مصفوفة الأزرار بصيغة JSON
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "📢 مشاركة القناة", "url": share_url},
-                {"text": "💼 قائمة الوظائف", "url": clean_link}
-            ]
-        ]
-    }
-    
-    payload = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-        "reply_markup": json.dumps(reply_markup) # تحويل الأزرار لنص JSON لضمان الظهور
-    }
-    
-    try:
-        r = HTTP.post(url, data=payload, timeout=20)
-        res = r.json()
-        if not res.get("ok"):
-            log.error(f"فشل إرسال تليجرام: {res.get('description')}")
-        return res.get("ok", False)
-    except Exception as e:
-        log.error(f"خطأ اتصال تليجرام: {e}")
-        return False
+# ==================== محرك النشر التلقائي ====================
+def posting_engine():
+    while True:
+        if state["active"] and state["remaining"] > 0:
+            # Gemini يختار موضوع عشوائي من اختصاصاتك ليولّد نصيحة
+            prompt = "أنت خبير توظيف عراقي. اختر موضوعاً عشوائياً (سي في، مقابلة، نفط، مهارات، لغة) واكتب نصيحة باللهجة العراقية للشباب. لا تزد عن 3 أسطر."
+            content = gemini_ask(prompt)
+            
+            if content and not is_duplicate(content):
+                msg = f"💡 <b>نصيحة مهنية</b>\n━━━━━━━━━━━━━━\n\n{content}\n\n📢 @iraqjopsforall"
+                kb = {"inline_keyboard": [[{"text": "📢 مشاركة القناة", "url": f"https://t.me/share/url?url=https://t.me/iraqjopsforall"}]]}
+                
+                if send_msg(CHANNEL_ID, msg, kb).json().get("ok"):
+                    mark_done(content)
+                    state["remaining"] -= 1
+                    log.info(f"نُشر منشور. المتبقي في الحملة: {state['remaining']}")
+            
+            time.sleep(state["interval"] * 60)
+        else:
+            time.sleep(10)
 
-# ==================== المحرك الرئيسي (تشغيل مستمر) ====================
-def start_automated_system(interval_min: int):
-    log.info(f"🚀 البوت يعمل الآن! القناة: {CHANNEL_ID} | التوقيت: كل {interval_min} دقيقة.")
-    init_db() 
-    
+# ==================== لوحة التحكم والتعامل مع الأوامر ====================
+def bot_control():
+    offset = 0
     while True:
         try:
-            success = False
-            attempts = 0
-            
-            # محاولة توليد محتوى غير مكرر (3 محاولات) لتجنب الحلقات المفرغة
-            while not success and attempts < 3:
-                topic = random.choice(TOPICS)
-                tip = generate_professional_tip(topic) 
+            updates = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=20").json()
+            for up in updates.get("result", []):
+                offset = up["update_id"] + 1
                 
-                if tip and len(tip) > 10 and not is_duplicate(tip):
-                    # تنسيق المنشور
-                    final_message = (
-                        f"✨ <b>نصيحة مهنية: {topic}</b>\n"
-                        f"━━━━━━━━━━━━━━\n\n"
-                        f"{tip}\n\n"
-                        f"📍 <i>بالتوفيق لجميع شبابنا في مسيرتهم</i>\n\n"
-                        f"🏷 #نصائح_عمل #العراق #مستقبلكم"
-                    )
+                # التعامل مع الرسائل النصية
+                if "message" in up:
+                    msg = up["message"]
+                    uid = msg.get("from", {}).get("id")
+                    if uid != ADMIN_ID: continue
                     
-                    if send_post_with_buttons(final_message):
-                        save_posted(tip, topic)
-                        log.info(f"✅ تم النشر بنجاح عن موضوع: {topic}")
-                        success = True
-                    else:
-                        log.warning("⚠️ فشل الإرسال، قد يكون بسبب صلاحيات الأدمن.")
-                        break # الخروج للمحاولة في الدورة القادمة
-                else:
-                    attempts += 1
-                    log.info(f"♻️ محتوى مكرر أو قصير، محاولة {attempts}/3...")
-                    time.sleep(3) # انتظار بسيط بين المحاولات
+                    text = msg.get("text", "")
+                    if text == "/start":
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "🚀 تشغيل التلقائي", "callback_data": "run"}, {"text": "⏸️ إيقاف", "callback_data": "stop"}],
+                                [{"text": "📦 اختر حجم الحملة", "callback_data": "campaign_size"}],
+                                [{"text": "⏱️ ضبط الوقت", "callback_data": "set_time"}],
+                                [{"text": "📊 الحالة الحالية", "callback_data": "status"}]
+                            ]
+                        }
+                        send_msg(ADMIN_ID, "أهلاً حيدر! لوحة تحكم القناة جاهزة:", kb)
 
-            if not success:
-                log.warning("⚠️ تعذر النشر في هذه الدورة لتجنب التكرار.")
+                # التعامل مع ضغطات الأزرار (Callback)
+                elif "callback_query" in up:
+                    query = up["callback_query"]
+                    data = query["data"]
+                    qid = query["id"]
+                    
+                    if data == "campaign_size":
+                        kb = {"inline_keyboard": [
+                            [{"text": "50 منشور", "callback_data": "size_50"}, {"text": "100 منشور", "callback_data": "size_100"}],
+                            [{"text": "200 منشور", "callback_data": "size_200"}, {"text": "250 منشور", "callback_data": "size_250"}]
+                        ]}
+                        send_msg(ADMIN_ID, "اختر عدد المنشورات المطلوب جدولتها في الحملة:", kb)
+                    
+                    elif data.startswith("size_"):
+                        val = int(data.split("_")[1])
+                        state["remaining"] = val
+                        state["active"] = True
+                        send_msg(ADMIN_ID, f"⚡ تم حجز حملة بـ {val} منشور. جاري البدء...")
 
-        except Exception as e:
-            log.error(f"⚠️ خطأ مفاجئ في الحلقة الرئيسية: {e}")
-            
-        # الانتظار للدورة القادمة
-        log.info(f"💤 سأنتظر لمدة {interval_min} دقيقة حتى المنشور القادم...")
-        time.sleep(interval_min * 60)
+                    elif data == "set_time":
+                        kb = {"inline_keyboard": [
+                            [{"text": "كل 30 د", "callback_data": "time_30"}, {"text": "كل ساعة", "callback_data": "time_60"}],
+                            [{"text": "كل ساعتين", "callback_data": "time_120"}, {"text": "كل 6 ساعات", "callback_data": "time_360"}]
+                        ]}
+                        send_msg(ADMIN_ID, "اختر الفاصل الزمني بين المنشورات:", kb)
 
-# ==================== نقطة الانطلاق ====================
+                    elif data.startswith("time_"):
+                        val = int(data.split("_")[1])
+                        state["interval"] = val
+                        send_msg(ADMIN_ID, f"⏱️ تم ضبط الفاصل الزمني إلى {val} دقيقة.")
+
+                    elif data == "status":
+                        status = "✅ تعمل" if state["active"] else "🛑 متوقفة"
+                        info = f"حالة البوت: {status}\nالمتبقي بالحملة: {state['remaining']}\nالفاصل: {state['interval']} دقيقة"
+                        send_msg(ADMIN_ID, info)
+                    
+                    elif data == "run":
+                        state["active"] = True
+                        send_msg(ADMIN_ID, "🚀 تم استئناف العمل.")
+                    
+                    elif data == "stop":
+                        state["active"] = False
+                        send_msg(ADMIN_ID, "⏸️ تم إيقاف العمل مؤقتاً.")
+
+        except Exception as e: log.error(e)
+        time.sleep(1)
+
 if __name__ == "__main__":
-    # تشغيل النشر التلقائي (مثلاً كل 60 دقيقة)
-    try:
-        start_automated_system(interval_min=60)
-    except KeyboardInterrupt:
-        log.info("تم إيقاف البوت يدوياً.")
+    init_db()
+    threading.Thread(target=posting_engine, daemon=True).start()
+    log.info("البوت يعمل.. أرسل /start في تليجرام للتحكم.")
+    bot_control()
