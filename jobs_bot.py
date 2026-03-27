@@ -1,170 +1,172 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Iraq Jobs & Career Tips Bot - نسخة تعليمية ومعلوماتية للشباب الباحثين عن عمل
+- نشر نصائح كتابة CV
+- نصائح مقابلات
+- معلومات تقنية
+- تعليم AI
+- تحفيز وإيجابية
+- أخبار تقنية طريفة
+"""
+
+import os
+import re
+import json
 import time
+import hashlib
+import logging
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 import requests
-import random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# ================== إعدادات ==================
-BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY"
-CHANNEL_ID = "@iraqjopsforall"
-ADMIN_ID = 7590912344
+# ==================== الإعدادات ====================
+TOKEN = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"  # توكن بوتك
+CHANNEL_ID = "@iraq_career_tips"  # عدل باسم قناتك
+GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"  # Gemini API
+CHECK_INTERVALS = [60, 300, 600, 900, 1800]  # ثانية: 1د،5د،10د،15د،30د
+DB_FILE = "career_bot.db"
 
-# ================== الحالة ==================
-settings = {
-    "enabled": False,
-    "interval": 300,  # الافتراضي 5 دقائق
-    "topics": ["cv", "tools", "ai", "tips", "fun"]
-}
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler("bot.log", encoding="utf-8"), logging.StreamHandler()],
+)
+log = logging.getLogger(__name__)
+paused = False
+current_interval = 900  # 15 دقيقة افتراضي
+days_to_run = 30  # عدد أيام النشر التلقائي
 
-posted_messages = set()  # لتجنب التكرار
+TOPICS = [
+    "سيفي",
+    "نصائح مقابلات",
+    "معلومات تقنية",
+    "نصائح تعليم ai",
+    "نصائح تحفيز وايجابية"
+]
 
-# ================== ارسال ==================
-def send(chat_id, text, keyboard=None):
-    data = {"chat_id": chat_id, "text": text}
-    if keyboard:
-        data["reply_markup"] = keyboard
-    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=data)
+# ==================== الجلسة ====================
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update({"User-Agent": "IraqCareerBot/1.0"})
+    return session
 
-# ================== الكيبورد ==================
-def main_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "🚀 تشغيل"}, {"text": "⛔ إيقاف"}],
-            [{"text": "⏱ 5 دقائق"}, {"text": "⏱ 10 دقائق"}, {"text": "⏱ 15 دقائق"}, {"text": "⏱ 30 دقيقة"}],
-            [{"text": "🎯 CV"}, {"text": "🤖 AI"}, {"text": "💡 نصائح"}],
-            [{"text": "📢 نشر الآن"}]
-        ],
-        "resize_keyboard": True
-    }
+HTTP = _build_session()
 
-# ================== المحتوى ==================
-def generate():
-    templates = {
-        "cv": [
-            "📄 نصيحة CV: لا تكتب بس خريج، اذكر شنو تعرف تسوي وكون مختصر 🔥",
-            "📄 CVك أهم شي يبين شغلك مو بس شهادتك! 😉",
-            "📄 خلي CVك يلمع، ألوان وخطوط مرتبة 👌"
-        ],
-        "ai": [
-            "🤖 AI يساعدك تكتب CV ويختصر وقتك بشكل رهيب",
-            "🤖 استخدم تقنيات AI لتطوير نفسك بسرعة ⚡",
-            "🤖 AI مو بس للمبرمجين، يساعدك كلش تتعلم وتبدع"
-        ],
-        "tools": [
-            "🧰 Canva يسوي CV احترافي خلال دقائق 😎",
-            "🧰 Google Docs يوفر قوالب جاهزة CV بسهولة",
-            "🧰 LinkedIn مهم لتعديل CVك ومتابعة الشركات"
-        ],
-        "tips": [
-            "💡 لا ترسل نفس CV لكل شركة، عدله حسب الوظيفة",
-            "💡 رسالة التقديم القصيرة ممكن ترفع فرصك 🔥",
-            "💡 ترتيب الخبرات أهم شي، خلي الأهم بالأول"
-        ],
-        "fun": [
-            "😂 معلومة: AI ممكن يرفض CV قبل ما يشوفه بشر 😅",
-            "😂 كل شركة تحب CV مرتب، مو طول حچي 😎",
-            "😂 اجعل CVك يقرأه صاحب العمل بحماس، لا ينعس 😴"
-        ]
-    }
+# ==================== قاعدة البيانات ====================
+def init_db() -> None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("""CREATE TABLE IF NOT EXISTS posted_posts (
+        id TEXT PRIMARY KEY,
+        topic TEXT,
+        content TEXT,
+        posted_at TEXT
+    )""")
+    conn.commit()
+    conn.close()
 
-    topic = random.choice(settings["topics"])
-    msg = random.choice(templates[topic])
+def is_posted(content: str) -> bool:
+    key = hashlib.md5(content.encode("utf-8")).hexdigest()
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.execute("SELECT 1 FROM posted_posts WHERE id=?", (key,))
+    result = cur.fetchone()
+    conn.close()
+    return result is not None
 
-    # منع التكرار
-    while msg in posted_messages:
-        msg = random.choice(templates[topic])
+def mark_posted(content: str, topic: str) -> None:
+    key = hashlib.md5(content.encode("utf-8")).hexdigest()
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("INSERT OR IGNORE INTO posted_posts VALUES (?, ?, ?, ?)",
+                 (key, topic, content, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
 
-    posted_messages.add(msg)
-    return msg
+# ==================== تيليغرام ====================
+def tg_api(method: str, payload: Dict[str, Any], timeout: int = 20) -> Optional[Dict[str, Any]]:
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+    try:
+        r = HTTP.post(url, json=payload, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        log.error("Telegram %s failed: %s", method, r.text[:200])
+    except Exception as e:
+        log.error("Telegram %s exception: %s", method, e)
+    return None
 
-# ================== نشر ==================
-def post():
-    if not settings["enabled"]:
-        return
-    msg = generate()
-    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-        "chat_id": CHANNEL_ID,
-        "text": msg
-    })
-    print("✅ نشر:", msg)
+def send_message(chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> None:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    tg_api("sendMessage", payload)
 
-# ================== معالجة ==================
-def handle(msg):
-    text = msg.get("text", "")
-    chat_id = msg["chat"]["id"]
+def send_to_channel(text: str) -> bool:
+    payload = {"chat_id": CHANNEL_ID, "text": text, "parse_mode": "HTML"}
+    resp = tg_api("sendMessage", payload)
+    return bool(resp and resp.get("ok"))
 
-    if chat_id != ADMIN_ID:
-        return
+# ==================== أزرار التحكم ====================
+def topics_keyboard() -> Dict[str, Any]:
+    keyboard = [[{"text": t, "callback_data": f"topic:{t}"}] for t in TOPICS]
+    keyboard.append([{"text": "📝 نشر جميع المواضيع", "callback_data": "topic:all"}])
+    keyboard.append([{"text": "⏱ دقيقة", "callback_data": "interval:60"},
+                     {"text": "⏱ 5 دقائق", "callback_data": "interval:300"},
+                     {"text": "⏱ 10 دقائق", "callback_data": "interval:600"},
+                     {"text": "⏱ 15 دقائق", "callback_data": "interval:900"},
+                     {"text": "⏱ 30 دقائق", "callback_data": "interval:1800"}])
+    return {"inline_keyboard": keyboard}
 
-    if text == "/start":
-        send(chat_id, "🔥 لوحة التحكم", main_keyboard())
+# ==================== توليد المحتوى عبر Gemini ====================
+def generate_content(topic: str) -> str:
+    prompt = f"اكتب نصيحة قصيرة ولطيفة للشباب العراقي حول: {topic}. باللهجة العراقية، مختصرة، مشوقة، غير مملة."
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.3}}
+    try:
+        r = HTTP.post(url, json=payload, timeout=20)
+        if r.status_code == 200:
+            text = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            return text.strip()
+    except Exception as e:
+        log.error("Gemini error: %s", e)
+    return ""
 
-    elif text == "🚀 تشغيل":
-        settings["enabled"] = True
-        send(chat_id, "✅ تم التشغيل")
+# ==================== نشر تلقائي ====================
+def auto_post():
+    global paused
+    posts_today = 0
+    max_posts = days_to_run * (24*60*60 // current_interval)
+    while posts_today < max_posts:
+        if not paused:
+            topic = TOPICS[posts_today % len(TOPICS)]
+            if topic == "all":
+                for t in TOPICS:
+                    content = generate_content(t)
+                    if content and not is_posted(content):
+                        send_to_channel(content)
+                        mark_posted(content, t)
+            else:
+                content = generate_content(topic)
+                if content and not is_posted(content):
+                    send_to_channel(content)
+                    mark_posted(content, topic)
+            posts_today += 1
+        time.sleep(current_interval)
 
-    elif text == "⛔ إيقاف":
-        settings["enabled"] = False
-        send(chat_id, "⛔ تم الإيقاف")
-
-    elif text == "⏱ 5 دقائق":
-        settings["interval"] = 300
-        send(chat_id, "⏱ كل 5 دقائق")
-
-    elif text == "⏱ 10 دقائق":
-        settings["interval"] = 600
-        send(chat_id, "⏱ كل 10 دقائق")
-
-    elif text == "⏱ 15 دقائق":
-        settings["interval"] = 900
-        send(chat_id, "⏱ كل 15 دقيقة")
-
-    elif text == "⏱ 30 دقيقة":
-        settings["interval"] = 1800
-        send(chat_id, "⏱ كل 30 دقيقة")
-
-    elif text == "🎯 CV":
-        settings["topics"] = ["cv"]
-        send(chat_id, "🎯 محتوى CV فقط")
-
-    elif text == "🤖 AI":
-        settings["topics"] = ["ai"]
-        send(chat_id, "🤖 محتوى AI فقط")
-
-    elif text == "💡 نصائح":
-        settings["topics"] = ["tips"]
-        send(chat_id, "💡 نصائح فقط")
-
-    elif text == "📢 نشر الآن":
-        msg = generate()
-        send(chat_id, "📢 تم النشر")
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-            "chat_id": CHANNEL_ID,
-            "text": msg
-        })
-
-# ================== تشغيل ==================
-def main():
-    last_post = time.time()
-    offset = 0
-
-    print("🚀 البوت شغال")
-
-    while True:
-        try:
-            r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}").json()
-            for u in r.get("result", []):
-                offset = u["update_id"] + 1
-                if "message" in u:
-                    handle(u["message"])
-
-            # نشر تلقائي
-            if settings["enabled"] and time.time() - last_post >= settings["interval"]:
-                post()
-                last_post = time.time()
-
-        except Exception as e:
-            print("Error:", e)
-
-        time.sleep(2)
-
+# ==================== تشغيل البوت ====================
 if __name__ == "__main__":
-    main()
+    init_db()
+    threading.Thread(target=auto_post, daemon=True).start()
+    log.info("Bot is running... استخدم لوحة التحكم لإيقاف/تشغيل النشر.")
