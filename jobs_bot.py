@@ -5,10 +5,10 @@ import requests
 # ==================== الإعدادات الثابتة ====================
 BOT_TOKEN = "8615364517:AAG-y4NpcbNpA803DwJVtHBpIca5GfnB_gY" 
 CHANNEL_ID = "@iraqjopsforall"
-# جرب الموديل المستقر 1.5 فلاش
+# تغيير الموديل والرابط للإصدار المستقر v1
 MODEL_NAME = "gemini-1.5-flash" 
 GEMINI_API_KEY = "AIzaSyA_5I1nCiqa5m5x7pvqQLbcwLf3wpCQ-Bw"
-DB_FILE = "iraq_bot_stable_v8.db"
+DB_FILE = "iraq_bot_final_v9.db"
 
 state = {"active": False, "interval": 60, "remaining": 0, "current_topic": "تطوير الذات"}
 
@@ -32,15 +32,15 @@ def mark_done(txt):
         conn.execute("INSERT OR IGNORE INTO posted VALUES (?)", (h,))
         conn.commit()
 
-# ==================== محرك Gemini (نسخة الاستقرار) ====================
+# ==================== محرك Gemini (الرابط المستقر v1) ====================
 def gemini_ask(prompt):
-    # استخدام رابط الـ v1beta لضمان التوافق
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    # استخدام الإصدار المستقر v1 بدلاً من v1beta
+    url = f"https://generativelanguage.googleapis.com/v1/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
-            "parts": [{"text": f"{prompt} (ID: {random.randint(1,9999)})"}]
+            "parts": [{"text": f"{prompt} (Request Code: {random.randint(100,999)})"}]
         }]
     }
     
@@ -48,20 +48,16 @@ def gemini_ask(prompt):
         r = requests.post(url, json=payload, headers=headers, timeout=30)
         data = r.json()
         
-        # تشخيص دقيق للخطأ في حال وجد
         if "error" in data:
-            log.error(f"❌ خطأ من جوجل API: {data['error'].get('message')}")
+            log.error(f"❌ خطأ API: {data['error'].get('message')}")
             return None
 
         if "candidates" in data and len(data["candidates"]) > 0:
-            parts = data["candidates"][0].get("content", {}).get("parts", [])
-            if parts:
-                return parts[0].get("text", "").strip()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
         
-        log.warning(f"⚠️ رد غير متوقع من جوجل: {data}")
         return None
     except Exception as e:
-        log.error(f"❌ خطأ تقني: {e}")
+        log.error(f"❌ خطأ اتصال: {e}")
         return None
 
 # ==================== وظائف النشر ====================
@@ -76,18 +72,17 @@ def send_msg(chat_id, text, markup=None):
 
 def perform_publish():
     topic = state["current_topic"]
-    prompt = f"اكتب نصيحة مهنية قصيرة جداً (سطرين) باللهجة العراقية عن موضوع {topic} للشباب العراقي. ابدأ مباشرة بدون مقدمات."
+    prompt = f"أنت خبير توظيف عراقي. اكتب نصيحة مهنية باللهجة العراقية عن {topic}. سطرين فقط."
     
     for i in range(3):
         content = gemini_ask(prompt)
         if content and not is_duplicate(content):
             msg = f"💡 <b>{topic}</b>\n━━━━━━━━━━━━━━\n\n{content}\n\n📢 @iraqjopsforall"
-            kb = {"inline_keyboard": [[{"text": "📢 مشاركة القناة", "url": "https://t.me/iraqjopsforall"}]]}
+            kb = {"inline_keyboard": [[{"text": "📢 مشاركة", "url": "https://t.me/iraqjopsforall"}]]}
             if send_msg(CHANNEL_ID, msg, kb):
                 mark_done(content)
                 return True
-        log.info(f"🔄 محاولة {i+1} للتوليد...")
-        time.sleep(3)
+        time.sleep(2)
     return False
 
 # ==================== المحرك الرئيسي ====================
@@ -103,7 +98,7 @@ def posting_engine():
 
 def bot_control():
     offset = 0
-    log.info("🚀 البوت المستقر يعمل الآن.. أرسل /start")
+    log.info("🚀 البوت يعمل بالنسخة v1 المستقرة..")
     while True:
         try:
             r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset}&timeout=20").json()
@@ -112,16 +107,14 @@ def bot_control():
                 if "message" in up:
                     cid = up["message"]["chat"]["id"]
                     if up["message"].get("text") == "/start":
-                        kb = {"inline_keyboard": [[{"text": "💻 تقنية", "callback_data": "t_تقنية"}]]}
+                        kb = {"inline_keyboard": [[{"text": "🚀 ابدأ النشر التجريبي", "callback_data": "go"}]]}
                         send_msg(cid, "<b>اضغط للبدء:</b>", kb)
                 
                 elif "callback_query" in up:
-                    data = up["callback_query"]["data"]
                     cid = up["callback_query"]["message"]["chat"]["id"]
-                    if data == "t_تقنية":
-                        state.update({"active": True, "remaining": 10, "interval": 1, "current_topic": "تقنية"})
-                        send_msg(cid, "🚀 انطلقت حملة تجريبية (10 منشورات كل دقيقة). تحقق من القناة!")
-                        threading.Thread(target=perform_publish).start()
+                    state.update({"active": True, "remaining": 50, "interval": 1, "current_topic": "نصائح عامة"})
+                    send_msg(cid, "🚀 انطلقت الحملة! سيتم النشر كل دقيقة الآن.")
+                    threading.Thread(target=perform_publish).start()
 
         except Exception as e: log.error(e)
         time.sleep(1)
